@@ -4,6 +4,6 @@ config()
 
 
 export const {
-        LOCAL_SERVER_HOSTNAME,
+        LOCAL_APEX_SERVER_HOSTNAME,
         TARGET_EH_CONNECTION_STRING
 } = process.env

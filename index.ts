@@ -1,23 +1,41 @@
 import { getClient } from "./apex-client";
-import { EventHubProducerClient } from "@azure/event-hubs";
-import { ApexStatusSnapshotMessage, type_status_snapshot } from "./events";
-import { LOCAL_SERVER_HOSTNAME, TARGET_EH_CONNECTION_STRING } from "./config";
+import { ApexStatusSnapshotMessage, type_status_snapshot } from "./apex-events";
+import {
+  LOCAL_APEX_SERVER_HOSTNAME,
+  TARGET_EH_CONNECTION_STRING,
+} from "./config";
+import { DataSink, createConsoleDataSink } from "./data-sink";
+import { createEventHubDataSink } from "./event-hub-data-sink";
 
 async function main() {
   console.log("apex-event-hubs");
 
-  if (!TARGET_EH_CONNECTION_STRING)
-    throw new Error("TARGET_EH_CONNECTION_STRING must be defined");
+  //build out sinks based on what's configured
+  const eventHubSink =
+    TARGET_EH_CONNECTION_STRING &&
+    createEventHubDataSink<ApexStatusSnapshotMessage>(
+      TARGET_EH_CONNECTION_STRING
+    );
 
-  const apexClient = getClient({ localServerHostname: LOCAL_SERVER_HOSTNAME });
-  const ehProducerClient = new EventHubProducerClient(
-    TARGET_EH_CONNECTION_STRING
-  );
+  const consoleSink = createConsoleDataSink<ApexStatusSnapshotMessage>();
+
+  const sinks = [eventHubSink, consoleSink].filter(
+    (s) => s !== undefined
+  ) as DataSink<ApexStatusSnapshotMessage>[];
+
+  const apexClient = getClient({
+    localServerHostname: LOCAL_APEX_SERVER_HOSTNAME,
+  });
   const sampleIntervalMs = 15000;
+
+  console.info(
+    `Starting polling loop with sample interval of ${sampleIntervalMs}ms with sinks: ${sinks
+      .map((s) => s.name)
+      .join(", ")}`
+  );
 
   const workFunction = async () => {
     const readTime = new Date();
-    const eventDataBatch = await ehProducerClient.createBatch();
     const resp = await apexClient.status.get();
     const payload = resp.data;
     const statusSnapshot: ApexStatusSnapshotMessage = {
@@ -28,25 +46,14 @@ async function main() {
 
     const { hostname, serial, date } = payload.istat;
 
+    // send the data to all sinks
+    await Promise.all(sinks.map((sink) => sink.write(statusSnapshot)));
+
     console.log(`${readTime.toISOString()}: message sent`, {
       hostname,
       serial,
       date: new Date(date * 1000).toISOString(),
     });
-    if (
-      eventDataBatch.tryAdd({
-        body: Buffer.from(JSON.stringify(statusSnapshot), "utf8"),
-        properties: {
-          contentType: "application/json",
-          contentEncoding: "utf8",
-        },
-      })
-    ) {
-      // check return val
-      await ehProducerClient.sendBatch(eventDataBatch);
-    } else {
-      throw new Error("Failed to add event to batch");
-    }
   };
 
   // start the polling loop
